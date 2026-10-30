@@ -3,7 +3,10 @@
 
 <div align="center">
   <a href="https://scramdb.com">
-    <img src="../assets/scramdb-mark.svg" alt="ScramDB" height="110">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../assets/scramdb-mark-dark.svg">
+      <img src="../assets/scramdb-mark.svg" alt="ScramDB" height="110">
+    </picture>
   </a>
 </div>
 
@@ -11,7 +14,10 @@
 
 <div align="center">
   <a href="https://scramdb.com">
-    <img src="../assets/wordmark.png" alt="ScramDB" height="58">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../assets/wordmark-dark.png">
+      <img src="../assets/wordmark-light.png" alt="ScramDB" height="58">
+    </picture>
   </a>
 </div>
 
@@ -19,7 +25,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/tagline-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="../assets/tagline-light.png">
-    <img src="../assets/tagline-light.png" alt="Programmable Distributed Hyperscale UTAP database" height="30">
+    <img src="../assets/tagline-light.png" alt="Programmable Distributed Hyperscale UTAP database" height="32">
   </picture>
 </div>
 
@@ -34,7 +40,10 @@
 </div>
 
 <div align="center">
-  <img src="../assets/divider.svg" alt="">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/divider-dark.svg">
+    <img src="../assets/divider-light.svg" alt="">
+  </picture>
 </div>
 
 <br />
@@ -43,7 +52,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/tagline-join-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="../assets/tagline-join-light.png">
-    <img src="../assets/tagline-join-light.png" alt="Build with us" height="30">
+    <img src="../assets/tagline-join-light.png" alt="Build with us" height="32">
   </picture>
 </div>
 

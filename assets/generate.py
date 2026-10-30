@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 """
-Generate the profile README's buttons, taglines and social tiles.
+Generate the profile README's marks, buttons, taglines, social tiles and dividers
+in the ScramDB "Collective" design system.
 
-Three constraints drive every decision here:
+Constraints:
 
-1. GitHub cannot load a webfont, so SVG <text> would fall back to whatever the
-   viewer happens to have. Text assets are therefore rasterised to PNG at 2x
-   with Satoshi baked in, which is also why the reference layout we follow uses
-   PNG buttons. Text-free assets (divider, separator) stay SVG.
-2. The brand has no rounded corners anywhere. Every rectangle is square: the
-   site's CSS sets border-radius: 0 in nine places and reserves 50% for status
-   dots. Do not add an rx here.
-3. Light and dark variants genuinely differ (label colour flips), which is what
-   the <picture> + prefers-color-scheme markup in the README is for.
+1. GitHub cannot load a webfont, so text is rasterised to PNG at 2x with Geist
+   and Geist Mono baked in (retina-crisp). Text-free assets (mark, divider,
+   separator) stay SVG.
+2. Corners are 2px, borders 1px hairlines, edges crisp: the DS `sc-btn` look.
+3. Dark and light variants use the DS dark and "Paper" light tokens, which is
+   what the <picture> + prefers-color-scheme markup in the README switches on.
 
-Widths are measured by rendering each label and trimming it, then every button
-in a row is padded to a common width so the rows line up.
+Requires: Pillow, rsvg-convert, and the scramdb-docs checkout (for the social
+icon paths in react-icons).
 
-Requires: rsvg-convert, ImageMagick, and Satoshi visible to fontconfig
-(see install-fonts below).
-
-Usage:  python3 assets/generate.py [path-to-scramdb-docs]
+Usage:  python3 -I assets/generate.py [path-to-scramdb-docs]
 """
 
 import json
@@ -31,32 +26,36 @@ import sys
 import tempfile
 from pathlib import Path
 
+from PIL import Image, ImageDraw, ImageFont
+
 ASSETS = Path(__file__).resolve().parent
-DOCS_REPO = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / 'projects/scramdb-docs')
+DOCS_REPO = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / 'db/scramdb-docs')
 ICONS = DOCS_REPO / 'website/node_modules/react-icons'
+FONTS = Path.home() / '.local/share/fonts/geist'
 
-FONT_BOLD = 'Satoshi Black'
-FONT_MED = 'Satoshi Medium'
+# DS tokens per GitHub theme (tokens.css dark, "Paper" light).
+THEMES = {
+    'dark': dict(bg='#03060c', ink='#e9f0fb', muted='#74839d', accent='#6ce1d7',
+                 bright='#bff8f3', ctrl='#56667f', line=(140, 180, 240, 33)),
+    'light': dict(bg='#f5f7fa', ink='#0a1220', muted='#56657d', accent='#007a70',
+                  bright='#007a70', ctrl='#7b889c', line=(20, 50, 95, 31)),
+}
 
-# --scram-gradient: indigo -> violet -> orange.
-GRADIENT = [('0%', '#6366F1'), ('55%', '#A855F7'), ('100%', '#F97316')]
-
-# Foreground per GitHub theme. --scram-fg for dark, the site's deepest base for light.
-FG = {'dark': '#F1F5F9', 'light': '#0B1020'}
-DIM = {'dark': '#64748B', 'light': '#94A3B8'}
-
-BTN_H = 44          # button box height in CSS px before the 2x raster
-BTN_PAD = 30        # horizontal padding either side of the label
-LABEL_SIZE = 15
-SCALE = 2           # raster at 2x so the PNG stays crisp on retina
+S = 2                 # raster scale
+BTN_H = 44            # CSS px
+BTN_PAD = 24
+RADIUS = 2
+LABEL_SIZE = 12
+LABEL_TRACK = 0.1     # em
+SOCIAL_GAP = 4        # transparent margin either side of a tile, CSS px
 
 BUTTONS = [
-    ('btn-product', 'Product'),
-    ('btn-docs', 'Documentation'),
-    ('btn-issues', 'Issues'),
-    ('btn-single-node', 'Deploy Single Node'),
-    ('btn-cluster', 'Deploy Cluster'),
-    ('btn-discord', 'Discord'),
+    ('btn-product', 'Product', True),
+    ('btn-docs', 'Documentation', False),
+    ('btn-issues', 'Issues', False),
+    ('btn-single-node', 'Deploy Single Node', False),
+    ('btn-cluster', 'Deploy Cluster', False),
+    ('btn-discord', 'Discord', False),
 ]
 
 SOCIALS = [
@@ -69,86 +68,81 @@ SOCIALS = [
     ('social-discord', 'si', 'SiDiscord'),
 ]
 
+# (slug, text, css px size, weight)
 TAGLINES = [
-    ('tagline', 'Programmable Distributed Hyperscale UTAP database', 20, FONT_BOLD),
-    ('tagline-join', 'Build with us', 20, FONT_BOLD),
+    ('tagline', 'Programmable Distributed Hyperscale UTAP database', 22, 300),
+    ('tagline-join', 'Build with us', 22, 200),
 ]
 
-
-def run(cmd):
-    subprocess.run(cmd, check=True, capture_output=True)
-
-
-def grad(gid):
-    stops = ''.join(f'<stop offset="{o}" stop-color="{c}"/>' for o, c in GRADIENT)
-    return f'<linearGradient id="{gid}" x1="0" y1="0" x2="1" y2="1">{stops}</linearGradient>'
+# MARKS.ramp from the design system bundle.
+RAMP_INK = ('M10 2h3v3h-3zM14 2h3v3h-3zM6 6h3v3h-3zM14 6h3v3h-3zM2 10h3v3h-3zM10 10h3v3h-3z'
+            'M6 14h3v3h-3zM14 14h3v3h-3zM10 18h3v3h-3zM14 18h3v3h-3z')
+RAMP_ACC = 'M18 2h3v3h-3zM18 6h3v3h-3zM18 10h3v3h-3zM18 14h3v3h-3zM18 18h3v3h-3z'
 
 
-def svg_to_png(svg, out, scale=SCALE):
-    with tempfile.NamedTemporaryFile('w', suffix='.svg', delete=False) as f:
-        f.write(svg)
-        tmp = f.name
-    run(['rsvg-convert', '-z', str(scale), tmp, '-o', str(out)])
-    Path(tmp).unlink()
+def font(name, size, weight):
+    f = ImageFont.truetype(str(FONTS / name), size)
+    f.set_variation_by_axes([weight])
+    return f
 
 
-def measure(text, font, size):
-    """Render the label alone and trim it, so the button is sized from real
-    Satoshi metrics rather than a guess that could clip a descender."""
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="200">'
-        f'<text x="10" y="120" font-family="{font}" font-size="{size}" fill="#000">{text}</text></svg>'
-    )
-    with tempfile.TemporaryDirectory() as d:
-        png = Path(d) / 'm.png'
-        svg_to_png(svg, png, scale=1)
-        out = subprocess.run(['magick', str(png), '-trim', '-format', '%w %h', 'info:'],
-                             check=True, capture_output=True, text=True).stdout
-    w, h = (int(v) for v in out.split())
-    return w, h
+def spaced_width(text, f, track_px):
+    return sum(f.getlength(c) for c in text) + track_px * (len(text) - 1)
 
 
-def button_svg(label, width, theme):
-    """Square button: gradient hairline border, transparent fill, label in the
-    theme foreground."""
-    gid, b = 'g', 1.5
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{BTN_H}" '
-        f'viewBox="0 0 {width} {BTN_H}">'
-        f'<defs>{grad(gid)}</defs>'
-        f'<rect x="{b / 2}" y="{b / 2}" width="{width - b}" height="{BTN_H - b}" '
-        f'fill="none" stroke="url(#{gid})" stroke-width="{b}"/>'
-        f'<text x="{width / 2}" y="{BTN_H / 2}" fill="{FG[theme]}" font-size="{LABEL_SIZE}" '
-        f'font-family="{FONT_BOLD}" text-anchor="middle" dominant-baseline="central">{label}</text>'
-        f'</svg>'
-    )
+def draw_spaced(d, x, y, text, f, fill, track_px):
+    for c in text:
+        d.text((x, y), c, font=f, fill=fill, anchor='ls')
+        x += f.getlength(c) + track_px
 
 
-def text_svg(text, size, font, theme, pad=6):
-    w, h = measure(text, font, size)
-    width, height = w + pad * 2, h + pad * 2
-    return width, (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">'
-        f'<text x="{width / 2}" y="{height / 2}" fill="{FG[theme]}" font-size="{size}" '
-        f'font-family="{font}" text-anchor="middle" dominant-baseline="central">{text}</text>'
-        f'</svg>'
-    )
+def mix(fg, bg, a):
+    f, b = (tuple(int(h[i:i + 2], 16) for i in (1, 3, 5)) for h in (fg, bg))
+    return tuple(round(b[i] + (f[i] - b[i]) * a) for i in range(3))
 
 
-def wordmark_svg(theme):
-    text, size = 'ScramDB', 46
-    w, h = measure(text, FONT_BOLD, size)
-    width, height = w + 16, h + 20
-    gid = 'g'
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">'
-        f'<defs>{grad(gid)}</defs>'
-        f'<text x="{width / 2}" y="{height / 2}" fill="url(#{gid})" font-size="{size}" '
-        f'font-family="{FONT_BOLD}" text-anchor="middle" dominant-baseline="central">{text}</text>'
-        f'</svg>'
-    )
+def label_font():
+    return font('GeistMono.ttf', LABEL_SIZE * S, 500)
+
+
+def button_png(label, width, primary, t, out):
+    """sc-btn: 2px radius, 1px border, mono uppercase label. Primary is an
+    accent border over a 12% accent fill, the rest are ghost."""
+    w, h = width * S, BTN_H * S
+    fill, border, ink = ((mix(t['accent'], t['bg'], .12), t['accent'], t['bright'] if t is THEMES['dark'] else t['accent'])
+                         if primary else (t['bg'], t['ctrl'], t['ink']))
+    im = Image.new('RGB', (w, h), t['bg'])
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=RADIUS * S, fill=fill, outline=border, width=S)
+    f, text = label_font(), label.upper()
+    track = LABEL_TRACK * LABEL_SIZE * S
+    tw = spaced_width(text, f, track)
+    # cap-height centred: baseline = middle + half the cap height
+    cap = f.getbbox('H', anchor='ls')[1]
+    draw_spaced(d, (w - tw) / 2, h / 2 - cap / 2, text, f, ink, track)
+    im.save(out)
+
+
+def tagline_png(text, size, weight, t, out):
+    f = font('Geist.ttf', size * S, weight)
+    l, top, r, b = f.getbbox(text, anchor='ls')
+    pad = 6 * S
+    im = Image.new('RGBA', (r - l + pad * 2, b - top + pad * 2), (0, 0, 0, 0))
+    ImageDraw.Draw(im).text((pad - l, pad - top), text, font=f, fill=t['ink'], anchor='ls')
+    im.save(out)
+
+
+def wordmark_png(t, out):
+    size, track = 56, -0.04
+    f = font('Geist.ttf', size * S, 400)
+    text = 'ScramDB'
+    tp = track * size * S
+    tw = int(spaced_width(text, f, tp)) + 1
+    top, bot = f.getbbox('S', anchor='ls')[1], f.getbbox('S', anchor='ls')[3]
+    pad = 6 * S
+    im = Image.new('RGBA', (tw + pad * 2, bot - top + pad * 2 + 4 * S), (0, 0, 0, 0))
+    draw_spaced(ImageDraw.Draw(im), pad, pad - top, text, f, t['ink'], tp)
+    im.save(out)
 
 
 def extract_icon(family, name):
@@ -160,77 +154,82 @@ def extract_icon(family, name):
     return spec['attr']['viewBox'], [c['attr']['d'] for c in spec['child'] if c['tag'] == 'path']
 
 
-def social_svg(family, name, theme):
+def social_png(family, name, t, out):
+    """Square hairline tile, ink glyph, with a transparent gutter either side
+    so adjacent tiles do not touch."""
     view_box, paths = extract_icon(family, name)
     _, _, vw, vh = (float(v) for v in view_box.split())
-    box, glyph, gid, b = BTN_H, 19, 'g', 1.5
-    scale = glyph / max(vw, vh)
-    tx, ty = (box - vw * scale) / 2, (box - vh * scale) / 2
-    d = ''.join(f'<path d="{p}" fill="{FG[theme]}"/>' for p in paths)
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{box}" height="{box}" '
-        f'viewBox="0 0 {box} {box}">'
-        f'<defs>{grad(gid)}</defs>'
-        f'<rect x="{b / 2}" y="{b / 2}" width="{box - b}" height="{box - b}" '
-        f'fill="none" stroke="url(#{gid})" stroke-width="{b}"/>'
-        f'<g transform="translate({tx:.2f},{ty:.2f}) scale({scale:.4f})">{d}</g>'
-        f'</svg>'
-    )
+    glyph = 18
+    k = glyph / max(vw, vh)
+    box, gap = BTN_H, SOCIAL_GAP
+    total = box + gap * 2
+    d = ''.join(f'<path d="{p}" fill="{t["ink"]}"/>' for p in paths)
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{total}" height="{box}" viewBox="0 0 {total} {box}">'
+           f'<rect x="{gap + .5}" y=".5" width="{box - 1}" height="{box - 1}" rx="{RADIUS}" '
+           f'fill="{t["bg"]}" stroke="{t["ctrl"]}"/>'
+           f'<g transform="translate({gap + (box - vw * k) / 2:.2f},{(box - vh * k) / 2:.2f}) scale({k:.4f})">{d}</g></svg>')
+    rsvg(svg, out)
 
 
-def separator_svg(theme):
+def rsvg(svg, out):
+    with tempfile.NamedTemporaryFile('w', suffix='.svg', delete=False) as f:
+        f.write(svg)
+        tmp = f.name
+    subprocess.run(['rsvg-convert', '-z', str(S), tmp, '-o', str(out)], check=True, capture_output=True)
+    Path(tmp).unlink()
+
+
+def mark_svg(t):
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" '
+            f'shape-rendering="crispEdges"><path d="{RAMP_INK}" fill="{t["ink"]}"/>'
+            f'<path d="{RAMP_ACC}" fill="{t["accent"]}"/></svg>')
+
+
+def separator_svg(t):
     w = 14
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{BTN_H}" '
-        f'viewBox="0 0 {w} {BTN_H}"><rect x="{w / 2 - 0.5}" y="12" width="1" '
-        f'height="{BTN_H - 24}" fill="{DIM[theme]}"/></svg>'
-    )
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{BTN_H}" viewBox="0 0 {w} {BTN_H}" '
+            f'shape-rendering="crispEdges"><rect x="{w // 2 - 1}" y="{BTN_H // 2 - 1}" width="3" height="3" '
+            f'fill="{t["accent"]}" opacity=".55"/></svg>')
 
 
-def divider_svg():
-    w, h, gid = 900, 2, 'g'
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
-        f'<defs>{grad(gid)}</defs><rect width="{w}" height="{h}" fill="url(#{gid})" opacity="0.5"/></svg>'
-    )
+def divider_svg(t):
+    """k-pixels: 3px squares on a 4px pitch, accent at .55."""
+    w = 900
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="3" viewBox="0 0 {w} 3" '
+            f'shape-rendering="crispEdges"><defs><pattern id="p" width="4" height="3" patternUnits="userSpaceOnUse">'
+            f'<rect width="3" height="3" fill="{t["accent"]}" opacity=".55"/></pattern></defs>'
+            f'<rect width="{w}" height="3" fill="url(#p)"/></svg>')
+
+
+def text_width(label):
+    f = label_font()
+    return -(-int(spaced_width(label.upper(), f, LABEL_TRACK * LABEL_SIZE * S)) // S)
 
 
 def main():
-    for tool in ('rsvg-convert', 'magick'):
-        if not shutil.which(tool):
-            raise SystemExit(f'{tool} is required')
+    if not shutil.which('rsvg-convert'):
+        raise SystemExit('rsvg-convert is required')
     if not ICONS.exists():
         raise SystemExit(f'react-icons not found at {ICONS}')
 
-    # One width for every button, measured from the longest label, so both rows
-    # are the same total width and the grid actually lines up.
-    rows = [['btn-product', 'btn-docs', 'btn-issues'],
-            ['btn-single-node', 'btn-cluster', 'btn-discord']]
-    common = max(measure(label, FONT_BOLD, LABEL_SIZE)[0] for _, label in BUTTONS) + BTN_PAD * 2
-    widths = {slug: common for slug, _ in BUTTONS}
-
+    # One width for every button so both rows line up.
+    common = max(text_width(label) for _, label, _ in BUTTONS) + BTN_PAD * 2
     n = 0
-    for theme in ('dark', 'light'):
-        for slug, label in BUTTONS:
-            svg_to_png(button_svg(label, widths[slug], theme), ASSETS / f'{slug}-{theme}.png')
-            n += 1
+    for theme, t in THEMES.items():
+        for slug, label, primary in BUTTONS:
+            button_png(label, common, primary, t, ASSETS / f'{slug}-{theme}.png')
         for slug, family, name in SOCIALS:
-            svg_to_png(social_svg(family, name, theme), ASSETS / f'{slug}-{theme}.png')
-            n += 1
-        for slug, text, size, font in TAGLINES:
-            _, svg = text_svg(text, size, font, theme)
-            svg_to_png(svg, ASSETS / f'{slug}-{theme}.png')
-            n += 1
-        (ASSETS / f'btn-separator-{theme}.svg').write_text(separator_svg(theme), encoding='utf8')
-        n += 1
-    # The wordmark is a gradient fill and the mark is multi-colour art on
-    # transparency: both read on either theme, so a dark/light pair would be two
-    # identical files pretending to differ. One asset, plain <img> in the README.
-    svg_to_png(wordmark_svg('dark'), ASSETS / 'wordmark.png')
-    n += 1
-    (ASSETS / 'divider.svg').write_text(divider_svg(), encoding='utf8')
-    print(f'wrote {n + 1} assets to {ASSETS}')
-    print(f"uniform button width: {common}px")
+            social_png(family, name, t, ASSETS / f'{slug}-{theme}.png')
+        for slug, text, size, weight in TAGLINES:
+            tagline_png(text, size, weight, t, ASSETS / f'{slug}-{theme}.png')
+        wordmark_png(t, ASSETS / f'wordmark-{theme}.png')
+        (ASSETS / f'btn-separator-{theme}.svg').write_text(separator_svg(t), encoding='utf8')
+        (ASSETS / f'divider-{theme}.svg').write_text(divider_svg(t), encoding='utf8')
+        # The default (light) mark keeps the original file name.
+        mark = 'scramdb-mark.svg' if theme == 'light' else 'scramdb-mark-dark.svg'
+        (ASSETS / mark).write_text(mark_svg(t), encoding='utf8')
+        n += len(BUTTONS) + len(SOCIALS) + len(TAGLINES) + 4
+    print(f'wrote {n} assets to {ASSETS}; uniform button width {common}px')
 
 
 if __name__ == '__main__':
